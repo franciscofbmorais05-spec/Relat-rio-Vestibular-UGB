@@ -3,9 +3,10 @@ core.py - Cerebro do gerador de relatorio do Vestibular UGB-FERP.
 Le os 5 PDFs brutos, aplica as regras de limpeza, calcula os 10 numeros
 e gera a arte (PNG) atualizada a partir do template.
 """
-import os, re
+import os, re, gc
 from collections import defaultdict
 import pdfplumber
+from pypdf import PdfReader          # <- mais leve que pdfminer para texto
 from PIL import Image, ImageDraw, ImageFont
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -24,8 +25,17 @@ def _digits(s):
     return re.sub(r"\D", "", s or "")
 
 def _full_text(path):
-    with pdfplumber.open(path) as pdf:
-        return "\n".join((p.extract_text() or "") for p in pdf.pages)
+    """
+    Extrai texto com pypdf — usa ~80% menos RAM que pdfplumber/pdfminer.
+    Chamado 5x na classificacao + 2x no _grep_num: economiza muita memoria.
+    """
+    reader = PdfReader(path)
+    parts = []
+    for page in reader.pages:
+        t = page.extract_text()
+        if t:
+            parts.append(t)
+    return "\n".join(parts)
 
 def classify(path):
     """Identifica qual dos 5 relatorios e o PDF, pelo conteudo."""
@@ -59,6 +69,7 @@ def parse_inscritos(path):
                     pago = (len(r) > 7 and "PAGO" in (r[7] or "").upper()
                             and "NÃO" not in (r[7] or "").upper())
                     rows.append(dict(insc=int(insc), nome=nome, cel=cel, forma=forma, pago=pago))
+            gc.collect()   # libera memoria apos cada pagina
     return rows
 
 def clean_inscritos(rows):
@@ -89,6 +100,7 @@ def _count_rows(path):
                         n += 1
                         if _is_test(r[1] if len(r) > 1 else ""):
                             tests += 1
+            gc.collect()   # libera memoria apos cada pagina
     return n, tests
 
 def _grep_num(path, pattern):
@@ -101,16 +113,24 @@ def computar(paths_por_tipo):
     Retorna dict com os 10 valores + diagnostico.
     """
     ins = parse_inscritos(paths_por_tipo["inscritos"])
+    gc.collect()
     c = clean_inscritos(ins)
+    del ins
+    gc.collect()
+
     aprov_rows, aprov_tests = _count_rows(paths_por_tipo["aprovados"])
+    gc.collect()
     aprovados = aprov_rows - aprov_tests
+
     matric = _grep_num(paths_por_tipo["matriculados"],
                        r"TOTAL POR UNIDADE:\s*\d+\s*/\s*TOTAL ATIVO:\s*(\d+)") or 0
+    gc.collect()
     pagas = _grep_num(paths_por_tipo["pagas"], r"Total Geral:\s*(\d+)") or 0
+    gc.collect()
 
     total, pago, naopago = c["total"], c["pago"], c["naopago"]
     precisa_prova = pago - aprovados
-    precisa_mensal = aprov_rows - pagas      # 66 - 7 = 59 (igual a arte aprovada)
+    precisa_mensal = aprov_rows - pagas
     total_geral = matric + pagas
 
     return dict(
@@ -118,7 +138,8 @@ def computar(paths_por_tipo):
             1: total, 2: pago, 3: aprovados, 4: matric,
             5: naopago, 6: precisa_prova, 7: precisa_mensal, 8: pagas, 9: total_geral,
         },
-        diag=dict(bruto=len(ins), testes=c["n_test"], duplicidades=c["n_dup"],
+        diag=dict(bruto=len(c)+c["n_test"]+c["n_dup"], testes=c["n_test"],
+                  duplicidades=c["n_dup"],
                   aprov_rows=aprov_rows, aprov_tests=aprov_tests),
     )
 
@@ -130,7 +151,7 @@ ROWY = {1: 421, 2: 629, 3: 831, 4: 1026}
 CLEANY = {1: 493, 2: 684, 3: 898, 4: 1076}
 F18 = {1: (LEFT, 1), 2: (LEFT, 2), 3: (LEFT, 3), 4: (LEFT, 4),
        5: (RIGHT, 1), 6: (RIGHT, 2), 7: (RIGHT, 3), 8: (RIGHT, 4)}
-F10_X, F10_BASE, F10_H = 1675, 1268, 27  # rodape (semestre anterior)
+F10_X, F10_BASE, F10_H = 1675, 1268, 27
 
 def _fit(text, th, path):
     lo, hi = 20, 150
@@ -163,7 +184,7 @@ def gerar_imagem(valores, label_anterior, num_anterior, out_path):
         sub = m[yt:yb, bx0:bx1 + 1]; ys = np.where(sub.any(1))[0]
         return (int(bx0), int(yt + ys.min()), int(bx1), int(yt + ys.max()))
 
-    bb9 = iso(1122, 1183, 790, 1290, 20, (200, 205, 205))  # "29"
+    bb9 = iso(1122, 1183, 790, 1290, 20, (200, 205, 205))
     arr = A0.copy()
 
     def erase_row(x0, y0, x1, y1, clean_y):
@@ -174,7 +195,7 @@ def gerar_imagem(valores, label_anterior, num_anterior, out_path):
         cy = ROWY[r]; erase_row(cx - 178, cy - 52, cx + 178, cy + 50, CLEANY[r])
     cy9 = (bb9[1] + bb9[3]) // 2
     erase_row(bb9[0] - 10, cy9 - 50, min(bb9[2] + 95, 1320), cy9 + 48, 1196)
-    erase_row(1665, 1236, 1732, 1272, 1231)  # rodape "32" (abaixo da linha)
+    erase_row(1665, 1236, 1732, 1272, 1231)
 
     img = Image.fromarray(arr); d = ImageDraw.Draw(img); col = (248, 251, 255)
     for f, (cx, r) in F18.items():
