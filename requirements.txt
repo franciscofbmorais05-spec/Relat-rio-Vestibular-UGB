@@ -1,5 +1,1 @@
-Flask==3.0.3
-pdfplumber==0.11.4
-Pillow==10.4.0
-numpy==1.26.4
-gunicorn==22.0.0
+Flask==3.0.3echo pdfplumber==0.11.4echo pypdf==4.3.1echo Pillow==10.4.0echo numpy==1.26.4echo gunicorn==22.0.0
